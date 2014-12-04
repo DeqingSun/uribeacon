@@ -27,14 +27,14 @@ This service is not dependent upon any other [services](https://developer.blueto
 
 |Transport   | Supported |
 |:-----------|-----------|
-| Classic	| false	 |
-| Low Energy | true	  |
+| Classic    | false	 |
+| Low Energy | true      |
 
 ### 1.3 Error Codes
 
-| Code | Description  |
-|:-----|:-------------|
-| 0xA0 | The beacon is not writable. |
+| Code   | Description                |
+|:-------|:---------------------------|
+| 0x08   | Insufficient Authorization |
 
 
 ## 2 Service Declaration
@@ -185,10 +185,10 @@ Writing a non-zero value to this characteristic will set all characteristics to 
 
 | Characteristic | Default Value |
 |:---------------|:--------------|
-| Uri Data | None |
+| Uri Data | vendor specified |
 | Uri Flags | 0 |
 | TX Power Mode | TX_POWER_MODE_LOW |
-| Beacon Period | 0 (disabled) |
+| Beacon Period | 1000 (1 second) |
 | Lock | 00000000-00000-0000-0000-000000000000 |
 
 ### 4 Reserved Characteristics

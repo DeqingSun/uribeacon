@@ -43,7 +43,14 @@ import org.uribeacon.config.UriBeaconConfig.UriBeaconCallback;
 import org.uribeacon.scan.compat.ScanResult;
 
 import java.net.URISyntaxException;
+import java.security.NoSuchAlgorithmException;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.KeySpec;
 import java.util.List;
+
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 
 public class ConfigActivity extends Activity implements PasswordDialogFragment.PasswordDialogListener{
   private Spinner mSchema;
@@ -57,50 +64,65 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
 
   private ProgressDialog mConnectionDialog = null;
   private static final byte DEFAULT_TX_POWER = -63;
+  private static final int ITERATIONS = 1000;
   private final String TAG = "ConfigActivity";
   private UriBeaconConfig mUriBeaconConfig;
 
   private final UriBeaconCallback mUriBeaconCallback = new UriBeaconCallback() {
     @Override
     public void onUriBeaconRead(ConfigUriBeacon configUriBeacon, int status) {
-      checkRequest(status);
-      updateInputFields(configUriBeacon);
+      if (status == BluetoothGatt.GATT_SUCCESS) {
+        updateInputFields(configUriBeacon);
+      } else if (status == BluetoothGatt.GATT_FAILURE) {
+        Toast.makeText(ConfigActivity.this, R.string.failed_to_read, Toast.LENGTH_SHORT).show();
+        finish();
+      } else {
+        Toast.makeText(ConfigActivity.this, getString(R.string.failed_with_code) + status, Toast.LENGTH_SHORT).show();
+        finish();
+      }
     }
 
     @Override
     public void onUriBeaconWrite(int status) {
-      checkRequest(status);
-      mUriBeaconConfig.closeUriBeacon();
-      finish();
-    }
-
-    private void checkRequest(int status) {
-      if (status == BluetoothGatt.GATT_FAILURE) {
-        Toast.makeText(ConfigActivity.this, "Failed to update the beacon", Toast.LENGTH_SHORT)
-            .show();
+      if (status == BluetoothGatt.GATT_SUCCESS) {
+        mUriBeaconConfig.closeUriBeacon();
         finish();
+      } else if (status == BluetoothGatt.GATT_FAILURE) {
+        Toast.makeText(ConfigActivity.this, R.string.failed_to_write, Toast.LENGTH_SHORT).show();
+      } else if (status == ConfigUriBeacon.INSUFFICIENT_AUTHORIZATION) {
+        Toast.makeText(ConfigActivity.this, R.string.wrong_password, Toast.LENGTH_SHORT).show();
+      } else {
+        Toast.makeText(ConfigActivity.this, getString(R.string.failed_with_code) + status, Toast.LENGTH_SHORT).show();
       }
+      enableUi(true);
     }
   };
 
-  private void blockUi() {
-    mUriValue.setEnabled(false);
+  private void enableUi(boolean block) {
+    mSchema.setEnabled(block);
+    mUriValue.setEnabled(block);
+    mFlagsValue.setEnabled(block);
+    for (EditText txCal : mAdvertisedTxPowerLevels) {
+      txCal.setEnabled(block);
+    }
+    mTxPowerMode.setEnabled(block);
+    mBeaconPeriod.setEnabled(block);
+    mLockState.setEnabled(block);
   }
-
   public void saveConfigBeacon(MenuItem menu) {
     try {
       if (mUriBeaconConfig.getVersion().equals(ProtocolV2.CONFIG_SERVICE_UUID)) {
         if (mOriginalLockState || mLockState.isChecked()) {
-          showPasswordDialog();
+          showPasswordDialog(false);
         }
         else {
-          writeUriBeaconV2();
+          writeUriBeaconV2(null);
         }
       }
       else {
-        blockUi();
+        enableUi(false);
         ConfigUriBeacon configUriBeacon = new ConfigUriBeacon.Builder()
-            .uriString(mUriValue.getText().toString())
+            .uriString(getUri())
             .txPowerLevel(DEFAULT_TX_POWER)
             .build();
         mUriBeaconConfig.writeUriBeacon(configUriBeacon);
@@ -111,11 +133,31 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
       finish();
     }
   }
-
-  private void writeUriBeaconV2() throws URISyntaxException {
-    blockUi();
+  public void onResetClicked(MenuItem menu) {
+    if (mOriginalLockState) {
+      showPasswordDialog(true);
+    } else {
+      resetConfigBeacon(null);
+    }
+  }
+  private void resetConfigBeacon(byte[] key) {
+    try {
+      enableUi(false);
+      ConfigUriBeacon configUriBeacon = new ConfigUriBeacon.Builder()
+          .key(key)
+          .reset(true)
+          .build();
+      mUriBeaconConfig.writeUriBeacon(configUriBeacon);
+    } catch (URISyntaxException e) {
+      Toast.makeText(ConfigActivity.this, R.string.reset_failed, Toast.LENGTH_SHORT).show();
+    }
+  }
+  private void writeUriBeaconV2(byte[] key) throws URISyntaxException {
+    enableUi(false);
     ConfigUriBeacon.Builder builder = new ConfigUriBeacon.Builder()
-        .uriString(mUriValue.getText().toString())
+        .key(key)
+        .lockState(mLockState.isChecked())
+        .uriString(getUri())
         .flags(hexStringToByte(mFlagsValue.getText().toString()))
         .beaconPeriod(Integer.parseInt(mBeaconPeriod.getText().toString()))
         .txPowerMode((byte) mTxPowerMode.getSelectedItemPosition());
@@ -126,7 +168,10 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
     builder.advertisedTxPowerLevels(tempTxCal);
     mUriBeaconConfig.writeUriBeacon(builder.build());
   }
-
+  private String getUri() {
+    return mUriValue.getText().toString().isEmpty() ?
+        mUriValue.getText().toString() : mSchema.getSelectedItem() + mUriValue.getText().toString();
+  }
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
@@ -153,6 +198,7 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
             finish();
           }
         });
+        mConnectionDialog.show();
       }
       List<ParcelUuid> uuids = scanResult.getScanRecord().getServiceUuids();
       // Assuming the first uuid is the config uuid
@@ -188,7 +234,13 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
 
   private void updateInputFields(ConfigUriBeacon configUriBeacon) {
     if (mUriValue != null && configUriBeacon != null) {
-      mUriValue.setText(configUriBeacon.getUriString());
+      String[] uriProtocols = getResources().getStringArray(R.array.uriProtocols);
+      for (int i = 0; i < uriProtocols.length; i++) {
+        if (configUriBeacon.getUriString().startsWith(uriProtocols[i])) {
+          mSchema.setSelection(i);
+          mUriValue.setText(configUriBeacon.getUriString().replace(uriProtocols[i], ""));
+        }
+      }
       if (mUriBeaconConfig.getVersion().equals(ProtocolV2.CONFIG_SERVICE_UUID)) {
         mFlagsValue.setText(byteToHexString(configUriBeacon.getFlags()));
         mBeaconPeriod.setText(Integer.toString(configUriBeacon.getBeaconPeriod()));
@@ -203,12 +255,12 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
       else if (mUriBeaconConfig.getVersion().equals(ProtocolV1.CONFIG_SERVICE_UUID)) {
         hideV2Fields();
       }
+      mConnectionDialog.dismiss();
     }
     else {
       Toast.makeText(this, "Beacon Contains Invalid Data", Toast.LENGTH_SHORT).show();
     }
   }
-
   private String byteToHexString(byte theByte) {
     return String.format("%02X", theByte);
   }
@@ -216,6 +268,7 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
   private byte hexStringToByte(String hexString) {
     return Integer.decode("0x" + hexString).byteValue();
   }
+
   private void hideV2Fields(){
     findViewById(R.id.secondRow).setVisibility(View.GONE);
     findViewById(R.id.txCalRow).setVisibility(View.GONE);
@@ -229,19 +282,46 @@ public class ConfigActivity extends Activity implements PasswordDialogFragment.P
     super.onDestroy();
   }
 
-  public void showPasswordDialog() {
+  private void showPasswordDialog(boolean reset) {
     DialogFragment dialog = new PasswordDialogFragment();
-    dialog.setArguments(new Bundle());
-    dialog.show(getFragmentManager(), "PasswordDialogFragment");
+    Bundle args = new Bundle();
+    args.putBoolean(PasswordDialogFragment.RESET, reset);
+    dialog.setArguments(args);
+    dialog.show(getFragmentManager(), PasswordDialogFragment.class.getCanonicalName());
   }
   @Override
-  public void onDialogWriteClick(DialogFragment dialog) {
+  public void onDialogWriteClick(String password, boolean reset) {
     try {
-      writeUriBeaconV2();
+      byte[] key = generateKey(password);
+      if (reset) {
+        resetConfigBeacon(key);
+      } else {
+        writeUriBeaconV2(key);
+      }
     } catch (URISyntaxException e) {
       Toast.makeText(ConfigActivity.this, "Invalid Uri", Toast.LENGTH_LONG).show();
       mUriBeaconConfig.closeUriBeacon();
       finish();
     }
+  }
+
+  /**
+   * Method that generates a 128bit key
+   *
+   * @param password the password used to generate the key
+   * @return The 128bit key in a byte[]
+   */
+  private static byte[] generateKey(String password) {
+    try {
+      byte[] salt = new byte[1];
+      SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1");
+      KeySpec keySpec = new PBEKeySpec(password.toCharArray(), salt, ITERATIONS, ConfigUriBeacon.KEY_LENGTH);
+      SecretKey secretKey = secretKeyFactory.generateSecret(keySpec);
+      // Return it in a byte[]
+      return secretKey.getEncoded();
+    } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
+      e.printStackTrace();
+    }
+    return null;
   }
 }
